@@ -64,7 +64,7 @@ async def clear_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧹 All tasks cleared.")
 
 if __name__ == '__main__':
-    TOKEN = "8387365932:AAGmMO0h2TVNE-bKpHME22sqWApfm7_UW6c"  # ← Replace this with your token
+    TOKEN = os.environ.get("8387365932:AAGmMO0h2TVNE-bKpHME22sqWApfm7_UW6c")
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
