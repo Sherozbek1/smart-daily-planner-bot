@@ -1,78 +1,172 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
 import json
-import os
+import random
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import (
+    Message, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+)
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
 
-DATA_FILE = "tasks.json"
+# --- BOT TOKEN ---
+BOT_TOKEN = "8387365932:AAGmMO0h2TVNE-bKpHME22sqWApfm7_UW6c"
 
-def load_tasks():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
 
-def save_tasks(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+# --- LANGUAGES ---
+LANGUAGES = {"en": "🇬🇧 English", "ru": "🇷🇺 Russian"}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Welcome to Smart Daily Planner!\nUse /add, /list, /done, /clear.")
+# --- DATA STORAGE ---
+USER_LANGS = {}
+USER_TASKS = {}
+USER_STATS = {}  # {user_id: {"completed": int, "streak": int, "last_active": "YYYY-MM-DD"}}
 
-async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    tasks = load_tasks()
-    task_text = " ".join(context.args)
+# --- MOTIVATIONAL MESSAGES ---
+MOTIVATIONS = [
+    "🔥 Keep pushing, you’re doing amazing!",
+    "💪 Small steps every day lead to big success.",
+    "🚀 You’re on your way to greatness, keep going!",
+    "🌟 Consistency beats motivation. Stay consistent!",
+    "🏆 Every completed task is a victory. Well done!",
+    "🌱 Grow a little every day, success will follow.",
+    "⚡ Your effort today builds your future tomorrow."
+]
 
-    if not task_text:
-        await update.message.reply_text("❗Please provide a task after /add.")
-        return
+# --- INLINE LANGUAGE SELECTION ---
+def get_language_markup():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=LANGUAGES[code], callback_data=f"lang:{code}")]
+        for code in LANGUAGES
+    ])
 
-    tasks.setdefault(user_id, []).append(task_text)
-    save_tasks(tasks)
-    await update.message.reply_text(f"✅ Task added: {task_text}")
+# --- MAIN KEYBOARD ---
+def get_main_reply_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="➕ Add Task"), KeyboardButton(text="📋 List Tasks")],
+        [KeyboardButton(text="✅ Mark Done"), KeyboardButton(text="📊 Daily Report")],
+        [KeyboardButton(text="👤 Profile")]
+    ], resize_keyboard=True)
 
-async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    tasks = load_tasks().get(user_id, [])
+# --- START COMMAND ---
+@dp.message(F.text == "/start")
+async def cmd_start(message: Message):
+    await message.answer("Please choose your language:", reply_markup=get_language_markup())
 
+@dp.callback_query(F.data.startswith("lang:"))
+async def set_language(callback: CallbackQuery):
+    lang_code = callback.data.split(":")[1]
+    USER_LANGS[callback.from_user.id] = lang_code
+    await callback.message.answer(
+        f"Language set to {LANGUAGES[lang_code]}.\n\nWhat would you like to do?",
+        reply_markup=get_main_reply_keyboard()
+    )
+    await callback.answer()
+
+# --- ADD TASK ---
+@dp.message(F.text == "➕ Add Task")
+async def add_task(message: Message):
+    await message.answer("Send me the task you want to add.")
+
+# --- LIST TASKS ---
+@dp.message(F.text == "📋 List Tasks")
+async def list_tasks(message: Message):
+    uid = message.from_user.id
+    tasks = USER_TASKS.get(uid, [])
     if not tasks:
-        await update.message.reply_text("📭 No tasks yet.")
+        await message.answer("You have no tasks.")
+    else:
+        await message.answer("Here are your tasks:\n" + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)]))
+
+# --- MARK DONE ---
+@dp.message(F.text == "✅ Mark Done")
+async def done_task_prompt(message: Message):
+    uid = message.from_user.id
+    tasks = USER_TASKS.get(uid, [])
+    if not tasks:
+        await message.answer("You have no tasks.")
         return
+    await message.answer("Send the number of the task to mark as done:\n" + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)]))
 
-    response = "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)])
-    await update.message.reply_text("🗒️ Your tasks:\n" + response)
+# --- DAILY REPORT (User Requested) ---
+@dp.message(F.text == "📊 Daily Report")
+async def daily_report(message: Message):
+    await send_daily_report(message.from_user.id)
 
-async def done_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    tasks = load_tasks()
+# --- PROFILE SECTION ---
+@dp.message(F.text == "👤 Profile")
+async def profile(message: Message):
+    uid = message.from_user.id
+    stats = USER_STATS.get(uid, {"completed": 0, "streak": 0})
+    await message.answer(
+        f"👤 <b>Your Profile</b>\n"
+        f"✅ Tasks Completed: {stats['completed']}\n"
+        f"🔥 Streak: {stats['streak']} days"
+    )
 
-    try:
-        index = int(context.args[0]) - 1
-        if user_id not in tasks or index < 0 or index >= len(tasks[user_id]):
-            raise ValueError()
-        done = tasks[user_id].pop(index)
-        save_tasks(tasks)
-        await update.message.reply_text(f"✅ Completed task: {done}")
-    except:
-        await update.message.reply_text("❗Usage: /done [task number]")
+# --- CATCH-ALL: Task Adding & Marking Done ---
+@dp.message()
+async def catch_all(message: Message):
+    uid = message.from_user.id
+    text = message.text.strip()
 
-async def clear_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    tasks = load_tasks()
-    tasks[user_id] = []
-    save_tasks(tasks)
-    await update.message.reply_text("🧹 All tasks cleared.")
+    if text.isdigit():  # marking task as done
+        index = int(text) - 1
+        tasks = USER_TASKS.get(uid, [])
+        if 0 <= index < len(tasks):
+            task = tasks.pop(index)
+            update_user_stats(uid)
+            await message.answer(f"✅ Task marked as done: {task}")
+        else:
+            await message.answer("Invalid task number.")
+    else:  # adding task
+        USER_TASKS.setdefault(uid, []).append(text)
+        await message.answer(f"Task added: {text}")
 
-if __name__ == '__main__':
-    # Replace with your actual token (keep it secret when deploying publicly!)
-    TOKEN = "8387365932:AAGmMO0h2TVNE-bKpHME22sqWApfm7_UW6c"
-    app = ApplicationBuilder().token(TOKEN).build()
+# --- HELPER: Update Streak & Stats ---
+def update_user_stats(uid):
+    today = datetime.now().strftime("%Y-%m-%d")
+    stats = USER_STATS.setdefault(uid, {"completed": 0, "streak": 0, "last_active": ""})
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", add_task))
-    app.add_handler(CommandHandler("list", list_tasks))
-    app.add_handler(CommandHandler("done", done_task))
-    app.add_handler(CommandHandler("clear", clear_tasks))
+    stats["completed"] += 1
+    if stats["last_active"] == today:
+        return
+    if stats["last_active"] == (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"):
+        stats["streak"] += 1
+    else:
+        stats["streak"] = 1
+    stats["last_active"] = today
 
-    print("🤖 Bot is running...")
-    app.run_polling()
+# --- HELPER: Send Daily Report ---
+async def send_daily_report(uid):
+    tasks = USER_TASKS.get(uid, [])
+    total = len(tasks)
+    completed = USER_STATS.get(uid, {}).get("completed", 0)
+    percent = int((completed / (completed + total)) * 100) if (completed + total) else 0
+    motivation = random.choice(MOTIVATIONS)
+
+    await bot.send_message(uid,
+        f"📊 <b>Daily Report</b>\n"
+        f"✅ Completed: {completed}\n"
+        f"📌 Pending: {total}\n"
+        f"🎯 Completion: {percent}%\n\n"
+        f"💡 {motivation}"
+    )
+
+# --- CRON JOB ENDPOINT (For External Trigger) ---
+@dp.message(F.text == "/send_report_all")
+async def send_report_all(message: Message):
+    for uid in USER_TASKS.keys():
+        await send_daily_report(uid)
+    await message.answer("✅ Reports sent to all users.")
+
+# --- MAIN ---
+async def main():
+    print("✅ Bot is running...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
